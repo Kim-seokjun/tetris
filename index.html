@@ -13,11 +13,12 @@
             background-color: #333;
             color: #fff;
             font-family: sans-serif;
+            user-select: none; /* 드래그 방지 */
         }
 
         .game-container {
             display: flex;
-            gap: 20px;
+            gap: 40px; /* 정보 패널과의 간격 증가 */
         }
 
         #gameCanvas {
@@ -54,14 +55,19 @@
     <div class="info-panel">
         <div class="score-box">
             <h2>점수</h2>
-            <div id="scoreDisplay">0</div>
+            <div id="scoreDisplay" style="font-size: 2em; font-weight: bold;">0</div>
         </div>
 
         <div class="next-box">
             <h3>다음 블록</h3>
             <canvas id="nextCanvas" width="120" height="120"></canvas>
         </div>
-        <p>조작법: ← → ↓ (이동), ↑ (회전)</p>
+        <div style="font-size: 0.9em; text-align: center;">
+            <p><strong>조작법</strong></p>
+            <p>← → : 이동</p>
+            <p>↑ : 회전</p>
+            <p>↓ : 빠르게 낙하</p>
+        </div>
     </div>
 </div>
 
@@ -69,14 +75,293 @@
     // --- 설정 ---
     const COLS = 10;
     const ROWS = 20;
-    const BLOCK_SIZE = 30; // 30px
+    const BLOCK_SIZE = 30;
     const BASE_DROP_INTERVAL = 1000; // 초기 낙하 속도 (1초)
     const SPEED_INCREASE_INTERVAL = 30 * 1000; // 30초마다
     const SPEED_MULTIPLIER = 0.8; // 속도 증가 배율 (간격 20% 단축)
 
-    // Canvas 설정
+    // Canvas 및 DOM 요소 설정
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
     const nextCanvas = document.getElementById('nextCanvas');
     const nextCtx = nextCanvas.getContext('2d');
-    const
+    const scoreDisplay = document.getElementById('scoreDisplay');
+
+    canvas.width = COLS * BLOCK_SIZE;
+    canvas.height = ROWS * BLOCK_SIZE;
+    nextCanvas.width = 4 * BLOCK_SIZE;
+    nextCanvas.height = 4 * BLOCK_SIZE;
+
+    // --- 테트로미노 모양 정의 (색상 포함) ---
+    const TETROMINOES = [
+        { shape: [[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]], color: '#00FFFF' }, // I (Cyan)
+        { shape: [[2,2], [2,2]], color: '#FFFF00' }, // O (Yellow)
+        { shape: [[0,3,0], [3,3,3], [0,0,0]], color: '#A020F0' }, // T (Purple)
+        { shape: [[0,4,4], [4,4,0], [0,0,0]], color: '#008000' }, // S (Green)
+        { shape: [[5,5,0], [0,5,5], [0,0,0]], color: '#FF0000' }, // Z (Red)
+        { shape: [[6,0,0], [6,6,6], [0,0,0]], color: '#0000FF' }, // J (Blue)
+        { shape: [[0,0,7], [7,7,7], [0,0,0]], color: '#FFA500' } // L (Orange)
+    ];
+
+    // --- 게임 상태 변수 ---
+    let grid = createEmptyGrid();
+    let currentPiece;
+    let nextPiece = getRandomPiece(); // 게임 시작 전 다음 블록 미리 생성
+    let score = 0;
+    let dropInterval = BASE_DROP_INTERVAL;
+    let dropCounter = 0;
+    let lastTime = 0;
+    let lastLevelTime = Date.now();
+    let gameOver = false;
+
+    // --- 핵심 함수 ---
+
+    function createEmptyGrid() {
+        return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    }
+
+    function getRandomPiece() {
+        const type = TETROMINOES[Math.floor(Math.random() * TETROMINOES.length)];
+        return {
+            shape: type.shape,
+            color: type.color,
+            // 블록이 가운데에서 시작하도록 위치 조정
+            x: Math.floor(COLS / 2) - Math.floor(type.shape[0].length / 2),
+            y: 0
+        };
+    }
+
+    function spawnPiece() {
+        // nextPiece를 currentPiece로 옮기고, 새로운 nextPiece를 생성
+        currentPiece = nextPiece; 
+        nextPiece = getRandomPiece();
+
+        // 게임 오버 체크: 새 블록이 생성될 위치에 이미 블록이 있다면 게임 오버
+        if (!isValidMove(currentPiece, 0, 0)) {
+            gameOver = true;
+            draw();
+            alert(`게임 오버! 최종 점수: ${score}`);
+        }
+    }
+
+    function isValidMove(piece, dx, dy, rotation) {
+        const shape = rotation ? rotate(piece.shape) : piece.shape;
+
+        for (let y = 0; y < shape.length; y++) {
+            for (let x = 0; x < shape[y].length; x++) {
+                if (shape[y][x]) {
+                    const newX = piece.x + x + dx;
+                    const newY = piece.y + y + dy;
+
+                    // 1. 경계 검사
+                    if (newX < 0 || newX >= COLS || newY >= ROWS) {
+                        return false;
+                    }
+                    // 2. 그리드 충돌 검사 (newY가 0보다 크거나 같을 때만, 즉 화면 안에 있을 때)
+                    if (newY >= 0 && grid[newY] && grid[newY][newX]) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    function rotate(matrix) {
+        const N = matrix.length;
+        const newMatrix = Array.from({ length: N }, () => Array(N).fill(0));
+        for (let i = 0; i < N; i++) {
+            for (let j = 0; j < N; j++) {
+                newMatrix[j][N - 1 - i] = matrix[i][j];
+            }
+        }
+        return newMatrix;
+    }
+
+    function lockPiece() {
+        for (let y = 0; y < currentPiece.shape.length; y++) {
+            for (let x = 0; x < currentPiece.shape[y].length; x++) {
+                if (currentPiece.shape[y][x]) {
+                    const gridY = currentPiece.y + y;
+                    const gridX = currentPiece.x + x;
+                    
+                    // 그리드 범위 내에 있을 때만 고정
+                    if (gridY >= 0 && gridY < ROWS && gridX >= 0 && gridX < COLS) {
+                        grid[gridY][gridX] = currentPiece.color;
+                    }
+                }
+            }
+        }
+        clearLines();
+        spawnPiece();
+    }
+
+    function clearLines() {
+        let linesCleared = 0;
+        for (let y = ROWS - 1; y >= 0; y--) {
+            if (grid[y].every(cell => cell !== 0)) {
+                // 라인 삭제 및 새로운 빈 줄 추가
+                grid.splice(y, 1);
+                grid.unshift(Array(COLS).fill(0));
+                linesCleared++;
+                y++; // 줄이 당겨졌으므로 현재 y 위치를 다시 검사
+            }
+        }
+
+        if (linesCleared > 0) {
+            const points = [0, 100, 300, 500, 800];
+            score += points[linesCleared];
+            updateScoreDisplay();
+        }
+    }
+    
+    function updateScoreDisplay() {
+        scoreDisplay.textContent = score;
+    }
+
+    function updateSpeed() {
+        const currentTime = Date.now();
+        if (currentTime - lastLevelTime >= SPEED_INCREASE_INTERVAL) {
+            dropInterval = Math.max(100, dropInterval * SPEED_MULTIPLIER);
+            lastLevelTime = currentTime;
+            console.log(`[속도 증가] 새로운 낙하 간격: ${dropInterval.toFixed(2)}ms`);
+        }
+    }
+
+    // --- 드로잉 함수 ---
+
+    function drawBlock(x, y, color, ctx, isGrid = true) {
+        ctx.fillStyle = color;
+        const drawX = isGrid ? x * BLOCK_SIZE : x;
+        const drawY = isGrid ? y * BLOCK_SIZE : y;
+
+        ctx.fillRect(drawX, drawY, BLOCK_SIZE, BLOCK_SIZE);
+        ctx.strokeStyle = '#333'; /* 블록 사이의 구분선 */
+        ctx.lineWidth = 1;
+        ctx.strokeRect(drawX, drawY, BLOCK_SIZE, BLOCK_SIZE);
+    }
+
+    function draw() {
+        // 메인 캔버스 초기화
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 1. 고정된 블록 그리기
+        for (let y = 0; y < ROWS; y++) {
+            for (let x = 0; x < COLS; x++) {
+                if (grid[y][x]) {
+                    drawBlock(x, y, grid[y][x], ctx);
+                }
+            }
+        }
+
+        // 2. 현재 떨어지는 블록 그리기
+        if (currentPiece) {
+            for (let y = 0; y < currentPiece.shape.length; y++) {
+                for (let x = 0; x < currentPiece.shape[y].length; x++) {
+                    if (currentPiece.shape[y][x]) {
+                        drawBlock(currentPiece.x + x, currentPiece.y + y, currentPiece.color, ctx);
+                    }
+                }
+            }
+        }
+        
+        // 3. 다음 블록 캔버스 초기화 및 그리기
+        nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+        if (nextPiece) {
+            const nextShape = nextPiece.shape;
+            const pieceWidth = nextShape[0].length * BLOCK_SIZE;
+            const pieceHeight = nextShape.length * BLOCK_SIZE;
+            const startX = (nextCanvas.width - pieceWidth) / 2;
+            const startY = (nextCanvas.height - pieceHeight) / 2;
+
+            for (let y = 0; y < nextShape.length; y++) {
+                for (let x = 0; x < nextShape[y].length; x++) {
+                    if (nextShape[y][x]) {
+                        // nextCanvas는 그리드가 아니므로 isGrid = false
+                        drawBlock(x * BLOCK_SIZE + startX, y * BLOCK_SIZE + startY, nextPiece.color, nextCtx, false);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 메인 게임 루프 ---
+
+    function loop(time = 0) {
+        if (gameOver) return;
+
+        // 첫 프레임일 때 lastTime 초기화
+        if (!lastTime) lastTime = time;
+
+        const deltaTime = time - lastTime;
+        lastTime = time;
+
+        dropCounter += deltaTime;
+        
+        updateSpeed(); // 속도 조절
+
+        // 블록 자동 낙하 처리
+        if (dropCounter > dropInterval) {
+            if (isValidMove(currentPiece, 0, 1)) {
+                currentPiece.y++;
+            } else {
+                lockPiece();
+            }
+            dropCounter = 0; // 낙하 후 카운터 재설정
+        }
+
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+
+    // --- 이벤트 리스너 (키보드 조작) ---
+
+    document.addEventListener('keydown', event => {
+        if (gameOver || !currentPiece) return;
+
+        let dx = 0;
+        let rotation = false;
+        let fastDrop = false;
+
+        if (event.key === 'ArrowLeft') {
+            dx = -1;
+        } else if (event.key === 'ArrowRight') {
+            dx = 1;
+        } else if (event.key === 'ArrowUp') {
+            rotation = true;
+        } else if (event.key === 'ArrowDown') {
+            fastDrop = true;
+            // 즉시 이동 후 자동 낙하 카운터 재설정
+            dropCounter = 0; 
+        }
+
+        if (fastDrop) {
+            // 아래 방향키는 블록을 1칸 즉시 내립니다 (Soft Drop)
+            if (isValidMove(currentPiece, 0, 1)) {
+                currentPiece.y++;
+            } else {
+                lockPiece();
+            }
+        } else if (rotation) {
+            const nextShape = rotate(currentPiece.shape);
+            if (isValidMove({ ...currentPiece, shape: nextShape }, 0, 0)) {
+                currentPiece.shape = nextShape;
+            }
+        } else if (dx !== 0) {
+            if (isValidMove(currentPiece, dx, 0)) {
+                currentPiece.x += dx;
+            }
+        }
+        
+        draw();
+    });
+
+    // --- 게임 시작 (최초 1회 실행) ---
+    spawnPiece(); // nextPiece (미리 생성됨)를 currentPiece로 가져옴
+    updateScoreDisplay();
+    loop(); 
+</script>
+</body>
+</html>
